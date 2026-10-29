@@ -1,6 +1,7 @@
 
 import 'dart:typed_data';
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -360,6 +361,134 @@ class _CadastroPageState extends State<CadastroPage> {
   }
 }
 
+class CameraCapturePage extends StatefulWidget {
+  const CameraCapturePage({super.key});
+
+  @override
+  State<CameraCapturePage> createState() => _CameraCapturePageState();
+}
+
+class _CameraCapturePageState extends State<CameraCapturePage> {
+  CameraController? _controller;
+  String? _erro;
+  bool _capturando = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _inicializarCamera();
+  }
+
+  Future<void> _inicializarCamera() async {
+    try {
+      final cameras = await availableCameras();
+
+      if (cameras.isEmpty) {
+        throw CameraException('cameraIndisponivel', 'Nenhuma câmera encontrada.');
+      }
+
+      final controller = CameraController(
+        cameras.first,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
+
+      await controller.initialize();
+
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+
+      setState(() => _controller = controller);
+    } on CameraException catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _erro = e.description ?? 'Não foi possível acessar a câmera.';
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => _erro = 'Não foi possível acessar a câmera.');
+      debugPrint('Erro ao inicializar câmera: $e');
+    }
+  }
+
+  Future<void> _tirarFoto() async {
+    final controller = _controller;
+
+    if (controller == null || !controller.value.isInitialized || _capturando) {
+      return;
+    }
+
+    setState(() => _capturando = true);
+
+    try {
+      final foto = await controller.takePicture();
+
+      if (mounted) Navigator.of(context).pop(foto);
+    } on CameraException catch (e) {
+      if (!mounted) return;
+
+      setState(() => _erro = e.description ?? 'Não foi possível tirar a foto.');
+    } finally {
+      if (mounted) setState(() => _capturando = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _controller;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Fotografar planta'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: _erro != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  _erro!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            )
+          : controller == null || !controller.value.isInitialized
+              ? const Center(child: CircularProgressIndicator())
+              : Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    CameraPreview(controller),
+                    Align(
+                      alignment: Alignment.bottomCenter,
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 28),
+                        child: FloatingActionButton(
+                          onPressed: _capturando ? null : _tirarFoto,
+                          child: _capturando
+                              ? const CircularProgressIndicator()
+                              : const Icon(Icons.camera_alt),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+    );
+  }
+}
+
 class InicioPage extends StatefulWidget {
   const InicioPage({super.key});
 
@@ -387,6 +516,25 @@ class _InicioPageState extends State<InicioPage> {
     'Perfil',
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    _recuperarFotoPerdida();
+  }
+
+  Future<void> _recuperarFotoPerdida() async {
+    final LostDataResponse resposta = await seletorImagem.retrieveLostData();
+
+    if (!mounted || resposta.isEmpty) return;
+
+    if (resposta.file != null) {
+      await _processarFoto(resposta.file!);
+    } else if (resposta.exception != null) {
+      mensagem('Não foi possível recuperar a foto. Tente novamente.');
+      debugPrint('Erro ao recuperar imagem perdida: ${resposta.exception}');
+    }
+  }
+
   void mensagem(String texto) {
     if (!mounted) return;
 
@@ -402,59 +550,85 @@ class _InicioPageState extends State<InicioPage> {
     try {
       final XFile? foto = await seletorImagem.pickImage(
         source: origem,
-        maxWidth: 1280,
-        maxHeight: 1280,
-        imageQuality: 75,
+        maxWidth: 640,
+        maxHeight: 640,
+        imageQuality: 70,
       );
 
       if (!mounted || foto == null) return;
 
-      setState(() {
-        processandoFoto = true;
-        resultadoDiagnostico = null;
-        bytesImagem = null;
-        nomeImagem = foto.name;
-      });
-
-      final Uint8List bytes = await foto.readAsBytes();
-
-      if (!mounted) return;
-
-      setState(() {
-        bytesImagem = bytes;
-      });
-
-      mensagem('Preparando imagem para análise...');
-
-      final ResultadoDiagnostico resultado =
-          await DiagnosticoIA.instancia.analisarFoto(bytes);
-
-      if (!mounted) return;
-
-      setState(() {
-        resultadoDiagnostico = resultado;
-        historico.insert(0, resultado);
-        processandoFoto = false;
-        selecionado = 2;
-      });
-
-      mensagem('Análise concluída.');
+      await _processarFoto(foto);
     } catch (e, stackTrace) {
-      debugPrint('Erro ao analisar imagem: $e');
-      debugPrintStack(stackTrace: stackTrace);
-
-      if (!mounted) return;
-
-      setState(() {
-        processandoFoto = false;
-        resultadoDiagnostico = null;
-      });
-
-      mensagem(
-        'Não foi possível analisar a foto. '
-        'Tente outra imagem com boa iluminação.',
-      );
+      _mostrarErroAnalise(e, stackTrace);
     }
+  }
+
+  Future<void> _abrirCamera() async {
+    if (processandoFoto) return;
+
+    try {
+      final XFile? foto = await Navigator.of(context).push<XFile>(
+        MaterialPageRoute(builder: (_) => const CameraCapturePage()),
+      );
+
+      if (!mounted || foto == null) return;
+
+      await _processarFoto(foto);
+    } catch (e, stackTrace) {
+      _mostrarErroAnalise(e, stackTrace);
+    }
+  }
+
+  void _mostrarErroAnalise(Object erro, StackTrace stackTrace) {
+    debugPrint('Erro ao analisar imagem: $erro');
+    debugPrintStack(stackTrace: stackTrace);
+
+    if (!mounted) return;
+
+    setState(() {
+      processandoFoto = false;
+      resultadoDiagnostico = null;
+    });
+
+    mensagem(
+      'Não foi possível analisar a foto. '
+      'Tente outra imagem com boa iluminação.',
+    );
+  }
+
+  Future<void> _processarFoto(XFile foto) async {
+    if (!mounted) return;
+
+    setState(() {
+      processandoFoto = true;
+      resultadoDiagnostico = null;
+      bytesImagem = null;
+      nomeImagem = foto.name;
+    });
+
+    final Uint8List bytes = await foto.readAsBytes();
+
+    if (!mounted) return;
+
+    setState(() {
+      bytesImagem = bytes;
+    });
+
+    mensagem('Preparando imagem para análise...');
+
+    final ResultadoDiagnostico resultado =
+        await DiagnosticoIA.instancia.analisarFoto(bytes);
+
+    if (!mounted) return;
+
+    setState(() {
+      resultadoDiagnostico = resultado;
+      historico.insert(0, resultado);
+      processandoFoto = false;
+      selecionado = 2;
+    });
+
+    mensagem('Análise concluída.');
   }
 
   void mudarPagina(int indice) {
@@ -700,7 +874,7 @@ class _InicioPageState extends State<InicioPage> {
         ElevatedButton.icon(
           onPressed: processandoFoto
               ? null
-              : () => selecionarFoto(ImageSource.camera),
+              : _abrirCamera,
           icon: const Icon(Icons.camera_alt),
           label: const Text('Tirar foto'),
         ),
