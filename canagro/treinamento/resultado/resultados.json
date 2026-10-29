@@ -1,0 +1,14 @@
+{
+  "total_imagens": 253,
+  "categorias": [
+    "Broca-da-cana",
+    "Cana saudável",
+    "Carvão da cana",
+    "Cigarrinha-da-cana",
+    "Mosaico da cana"
+  ],
+  "acuracia_validacao": 0.7894736842105263,
+  "acuracia_teste": 0.6578947368421053,
+  "perda_teste": 0.8777636352338289,
+  "observacao": "Resultado experimental. Não representa garantia de precisão em fotos reais de campo."
+}
